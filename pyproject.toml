@@ -1,0 +1,15 @@
+[project]
+name = "minigpt"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "datasets>=4.8.5",
+    "matplotlib>=3.10.9",
+    "numpy>=2.4.4",
+    "torch>=2.11.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.26.0",
+    "transformers>=5.7.0",
+]
