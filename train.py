@@ -62,7 +62,8 @@ def estimate_loss(model, dataloader, device, num_batches=20):
     model.eval()
     total_loss = 0.0
     for i, (x, y) in enumerate(dataloader):
-        if i >= num_batches: break
+        if i >= num_batches: 
+            break
         x, y = x.to(device), y.to(device)
         with torch.amp.autocast(device_type='cuda' if 'cuda' in device.type else 'cpu'):
             logits = model(x)
