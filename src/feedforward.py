@@ -1,6 +1,7 @@
 import torch.nn as nn
 from src.config import ModelConfig
 
+
 class FeedForwardNetwork(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -11,7 +12,7 @@ class FeedForwardNetwork(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
 
         self.activation = config.build_activation()
-    
+
     def forward(self, x):
         x = self.w1(x)
         x = self.activation(x)

@@ -11,27 +11,32 @@ class Head(nn.Module):
         self.query = nn.Linear(config.d_model, config.head_size, bias=False)
         self.value = nn.Linear(config.d_model, config.head_size, bias=False)
         self.attn_dropout = nn.Dropout(config.dropout)
-        self.register_buffer('tril', torch.tril(torch.ones(config.max_seq_len, config.max_seq_len)))
+        self.register_buffer(
+            "tril", torch.tril(torch.ones(config.max_seq_len, config.max_seq_len))
+        )
 
     def forward(self, x):
-        B,T,C = x.shape
+        B, T, C = x.shape
 
-        K = self.key(x)   # (B,T,hs) 
-        Q = self.query(x) # (B,T,hs)
-        V = self.value(x) # (B,T,hs)
+        K = self.key(x)  # (B,T,hs)
+        Q = self.query(x)  # (B,T,hs)
+        V = self.value(x)  # (B,T,hs)
 
         head_size = K.shape[-1]
 
         # compute attention scores
-        wei = Q @ K.transpose(-2,-1) * head_size**-0.5 # (B,T,hs) @ (B,hs,T) -> (B,T,T)
-        wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf')) # (B,T,T)
-        wei = F.softmax(wei, dim=-1) # (B,T,T)
+        wei = (
+            Q @ K.transpose(-2, -1) * head_size**-0.5
+        )  # (B,T,hs) @ (B,hs,T) -> (B,T,T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B,T,T)
+        wei = F.softmax(wei, dim=-1)  # (B,T,T)
         wei = self.attn_dropout(wei)
 
         # perform the weighted aggregation of the values
-        out = wei @ V # (B,T,T) @ (B,T,hs) -> (B,T,hs)
+        out = wei @ V  # (B,T,T) @ (B,T,hs) -> (B,T,hs)
         return out
-    
+
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()

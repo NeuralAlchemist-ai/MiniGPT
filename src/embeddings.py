@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from src.config import ModelConfig
 
+
 class TokenEmbedding(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -10,6 +11,7 @@ class TokenEmbedding(nn.Module):
 
     def forward(self, input_inds: torch.Tensor):
         return self.dropout(self.emb(input_inds))
+
 
 class LearnedPositionalEncoding(nn.Module):
     def __init__(self, config: ModelConfig):

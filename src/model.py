@@ -9,36 +9,43 @@ class MiniGPT(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.token_emb = TokenEmbedding(config)
-        self.pos_emb   = LearnedPositionalEncoding(config)
-        self.blocks    = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
-        self.norm      = config.build_norm()
-        self.lm_head   = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        self.pos_emb = LearnedPositionalEncoding(config)
+        self.blocks = nn.ModuleList(
+            [TransformerBlock(config) for _ in range(config.n_layers)]
+        )
+        self.norm = config.build_norm()
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
     def forward(self, input_ids: torch.Tensor):
         T = input_ids.shape[1]
 
-        x = self.token_emb(input_ids)       
-        x = x + self.pos_emb(T, device=input_ids.device)           
+        x = self.token_emb(input_ids)
+        x = x + self.pos_emb(T, device=input_ids.device)
 
         for block in self.blocks:
-            x = block(x)                 
+            x = block(x)
 
-        x = self.norm(x)                   
-        logits = self.lm_head(x)            
+        x = self.norm(x)
+        logits = self.lm_head(x)
         return logits
 
     @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 50, temperature: float = 1.0):
-        
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 50,
+        temperature: float = 1.0,
+    ):
+
         for _ in range(max_new_tokens):
-            idx_cond = input_ids[:, -self.pos_emb.embedding.num_embeddings:]
+            idx_cond = input_ids[:, -self.pos_emb.embedding.num_embeddings :]
 
-            logits = self.forward(idx_cond)         
-            logits = logits[:, -1, :] / temperature 
+            logits = self.forward(idx_cond)
+            logits = logits[:, -1, :] / temperature
 
-            probs      = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)  
+            probs = torch.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
 
             input_ids = torch.cat([input_ids, next_token], dim=1)
 
-        return input_ids 
+        return input_ids

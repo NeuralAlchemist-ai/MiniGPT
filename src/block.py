@@ -4,6 +4,7 @@ from src.config import ModelConfig
 from src.attention import MultiHeadAttention
 from src.feedforward import FeedForwardNetwork
 
+
 class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -13,7 +14,7 @@ class TransformerBlock(nn.Module):
 
         self.norm1 = config.build_norm()
         self.norm2 = config.build_norm()
-        
+
         self.residual_dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
