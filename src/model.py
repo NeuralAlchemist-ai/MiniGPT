@@ -24,7 +24,7 @@ class MiniGPT(nn.Module):
         x = self.token_emb(input_ids)
         x = x + self.pos_emb(T, device=input_ids.device)
 
-        x= self.dropout(x)
+        x = self.dropout(x)
 
         for block in self.blocks:
             x = block(x)
@@ -42,7 +42,7 @@ class MiniGPT(nn.Module):
     ):
 
         for _ in range(max_new_tokens):
-            idx_cond = input_ids[:, -self.config.max_seq_len:]
+            idx_cond = input_ids[:, -self.config.max_seq_len :]
 
             logits = self.forward(idx_cond)
             logits = logits[:, -1, :] / temperature
