@@ -31,6 +31,27 @@ class TextDataset(Dataset):
         return chunk[:-1], chunk[1:]
 
 
+class Early_Stopping():
+    def __init__(self, patience: int = 3, min_delta: float = 0.001):
+        self.best_loss = float('inf')
+        self.min_delta = min_delta
+        self.patience = patience
+        self.counter = 0
+        self.stop = False
+
+    def step(self, val_loss: float):
+        if val_loss < self.best_loss * (1 - self.min_delta):
+            self.best_loss = val_loss
+            self.counter = 0
+        else:
+            self.counter+=1
+            if self.counter >= self.patience:
+                self.stop = True
+
+        return self.stop
+
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--d_model", type=int, default=256)
@@ -47,12 +68,14 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--eval_every", type=int, default=500)
     parser.add_argument("--save_every", type=int, default=1000)
-    parser.add_argument("--data_path", type=str, default="data/train.txt")
+    parser.add_argument("--data_path", type=str, default="data/python_code.txt")
     parser.add_argument("--val_split", type=float, default=0.1)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--run_name", type=str, default="minigpt-run")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--patience", type=int, default=3)
+    parser.add_argument("--min_delta", type=float, default=0.001)
     return parser.parse_args()
 
 
@@ -93,9 +116,29 @@ def save_checkpoint(model, optimizer, config, epoch, step, path):
     )
     logging.info(f"Saved: {path}")
 
+def load_and_tokenize(data_path: str, tokenizer, chunk_size: int = 100000):
+    
+    all_ids = []
+    buffer  = []
+
+    with open(data_path, "r", encoding="utf-8") as f:
+        for line in f:
+            buffer.append(line)
+            if len(buffer) >= chunk_size:
+                chunk_text = "".join(buffer)
+                ids = tokenizer.encode(chunk_text, add_special_tokens=False)
+                all_ids.extend(ids)
+                buffer = []
+                logging.info(f"Tokenized {len(all_ids):,} tokens so far...")
+
+        if buffer:
+            chunk_text = "".join(buffer)
+            ids = tokenizer.encode(chunk_text, add_special_tokens=False)
+            all_ids.extend(ids)
+
+    return torch.tensor(all_ids, dtype=torch.long)
 
 def train(args):
-    # Set random seeds for reproducibility
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
@@ -105,17 +148,10 @@ def train(args):
 
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM3-3B")
 
-    # Ensure padding token is set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load and tokenize data
-    with open(args.data_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    token_ids = torch.tensor(
-        tokenizer.encode(text, add_special_tokens=False), dtype=torch.long
-    )
+    token_ids = load_and_tokenize(args.data_path, tokenizer)
     split_idx = int(len(token_ids) * (1 - args.val_split))
 
     train_loader = DataLoader(
@@ -131,7 +167,7 @@ def train(args):
     )
 
     config = ModelConfig(
-        vocab_size=tokenizer.vocab_size,
+        vocab_size=len(tokenizer),
         d_model=args.d_model,
         n_heads=args.n_heads,
         n_layers=args.n_layers,
@@ -167,6 +203,9 @@ def train(args):
 
     accumated_loss = 0.0
 
+    early_stopping = Early_Stopping(patience=args.patience, min_delta=args.min_delta)
+    best_val_loss = float('inf')
+
     for epoch in range(start_epoch, args.max_epochs):
         model.train()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.max_epochs}")
@@ -180,7 +219,7 @@ def train(args):
                 logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 loss = loss / args.grad_accum
-
+            
             scaler.scale(loss).backward()
             accumated_loss += loss.item()
 
@@ -200,15 +239,35 @@ def train(args):
                     v_loss = estimate_loss(model, val_loader, device)
                     logging.info(f"Step {global_step} | Val Loss: {v_loss:.4f}")
 
+                    if v_loss < best_val_loss:
+                        best_val_loss = v_loss
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            config,
+                            epoch,
+                            global_step,
+                            f"checkpoints/{args.run_name}_best.pt",
+                        )
+                        logging.info(f"Best model saved with val_loss {best_val_loss}")
+
+                    if early_stopping.step(v_loss):
+                        logging.info(f"Early stopping triggered at step {global_step}.")
+                        break
+                    
                 if global_step % args.save_every == 0:
                     save_checkpoint(
-                        model,
-                        optimizer,
-                        config,
-                        epoch,
-                        global_step,
-                        f"checkpoints/{args.run_name}_s{global_step}.pt",
-                    )
+                            model,
+                            optimizer,
+                            config,
+                            epoch,
+                            global_step,
+                            f"checkpoints/{args.run_name}_s{global_step}.pt",
+                        )
+                        
+        if early_stopping.stop:
+            break
+
 
     save_checkpoint(
         model,
