@@ -3,9 +3,9 @@ import os
 
 os.makedirs("data", exist_ok=True)
 
-ds = load_dataset("codeparrot/codeparrot-clean-valid",
-                  split="train[:20000]",
-                  trust_remote_code=True)
+ds = load_dataset(
+    "codeparrot/codeparrot-clean-valid", split="train[:20000]", trust_remote_code=True
+)
 
 print(f"Samples: {len(ds)}")
 print(f"Columns: {ds.column_names}")

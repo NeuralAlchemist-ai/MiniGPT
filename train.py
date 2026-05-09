@@ -31,9 +31,9 @@ class TextDataset(Dataset):
         return chunk[:-1], chunk[1:]
 
 
-class Early_Stopping():
+class Early_Stopping:
     def __init__(self, patience: int = 3, min_delta: float = 0.001):
-        self.best_loss = float('inf')
+        self.best_loss = float("inf")
         self.min_delta = min_delta
         self.patience = patience
         self.counter = 0
@@ -44,12 +44,11 @@ class Early_Stopping():
             self.best_loss = val_loss
             self.counter = 0
         else:
-            self.counter+=1
+            self.counter += 1
             if self.counter >= self.patience:
                 self.stop = True
 
         return self.stop
-
 
 
 def parse_args():
@@ -116,10 +115,11 @@ def save_checkpoint(model, optimizer, config, epoch, step, path):
     )
     logging.info(f"Saved: {path}")
 
+
 def load_and_tokenize(data_path: str, tokenizer, chunk_size: int = 100000):
-    
+
     all_ids = []
-    buffer  = []
+    buffer = []
 
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -137,6 +137,7 @@ def load_and_tokenize(data_path: str, tokenizer, chunk_size: int = 100000):
             all_ids.extend(ids)
 
     return torch.tensor(all_ids, dtype=torch.long)
+
 
 def train(args):
     torch.manual_seed(args.seed)
@@ -204,7 +205,7 @@ def train(args):
     accumated_loss = 0.0
 
     early_stopping = Early_Stopping(patience=args.patience, min_delta=args.min_delta)
-    best_val_loss = float('inf')
+    best_val_loss = float("inf")
 
     for epoch in range(start_epoch, args.max_epochs):
         model.train()
@@ -219,7 +220,7 @@ def train(args):
                 logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 loss = loss / args.grad_accum
-            
+
             scaler.scale(loss).backward()
             accumated_loss += loss.item()
 
@@ -254,20 +255,19 @@ def train(args):
                     if early_stopping.step(v_loss):
                         logging.info(f"Early stopping triggered at step {global_step}.")
                         break
-                    
+
                 if global_step % args.save_every == 0:
                     save_checkpoint(
-                            model,
-                            optimizer,
-                            config,
-                            epoch,
-                            global_step,
-                            f"checkpoints/{args.run_name}_s{global_step}.pt",
-                        )
-                        
+                        model,
+                        optimizer,
+                        config,
+                        epoch,
+                        global_step,
+                        f"checkpoints/{args.run_name}_s{global_step}.pt",
+                    )
+
         if early_stopping.stop:
             break
-
 
     save_checkpoint(
         model,
