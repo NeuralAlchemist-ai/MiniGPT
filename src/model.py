@@ -14,7 +14,7 @@ class MiniGPT(nn.Module):
         self.norm      = config.build_norm()
         self.lm_head   = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor):
         T = input_ids.shape[1]
 
         x = self.token_emb(input_ids)       

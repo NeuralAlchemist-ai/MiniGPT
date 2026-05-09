@@ -6,9 +6,10 @@ class TokenEmbedding(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.emb = nn.Embedding(config.vocab_size, config.d_model)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, input_inds: torch.Tensor):
-        return self.emb(input_inds)
+        return self.dropout(self.emb(input_inds))
 
 class LearnedPositionalEncoding(nn.Module):
     def __init__(self, config: ModelConfig):
