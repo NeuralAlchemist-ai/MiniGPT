@@ -13,6 +13,8 @@ class MiniGPT(nn.Module):
         self.blocks = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layers)]
         )
+        self.dropout = nn.Dropout(config.dropout)
+        self.config = config
         self.norm = config.build_norm()
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
@@ -21,6 +23,8 @@ class MiniGPT(nn.Module):
 
         x = self.token_emb(input_ids)
         x = x + self.pos_emb(T, device=input_ids.device)
+
+        x = self.dropout(x)
 
         for block in self.blocks:
             x = block(x)
@@ -38,7 +42,7 @@ class MiniGPT(nn.Module):
     ):
 
         for _ in range(max_new_tokens):
-            idx_cond = input_ids[:, -self.pos_emb.embedding.num_embeddings :]
+            idx_cond = input_ids[:, -self.config.max_seq_len :]
 
             logits = self.forward(idx_cond)
             logits = logits[:, -1, :] / temperature
