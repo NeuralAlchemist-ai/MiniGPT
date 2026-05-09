@@ -1,8 +1,8 @@
 import torch.nn as nn
 
-from config import ModelConfig
-from attention import MultiHeadAttention
-from feedforward import FeedForwardNetwork
+from src.config import ModelConfig
+from src.attention import MultiHeadAttention
+from src.feedforward import FeedForwardNetwork
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
@@ -13,9 +13,11 @@ class TransformerBlock(nn.Module):
 
         self.norm1 = config.build_norm()
         self.norm2 = config.build_norm()
+        
+        self.residual_dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        x = x + self.mha(self.norm1(x))
-        x = x + self.ffn(self.norm2(x))
+        x = x + self.residual_dropout(self.mha(self.norm1(x)))
+        x = x + self.residual_dropout(self.ffn(self.norm2(x)))
 
         return x
