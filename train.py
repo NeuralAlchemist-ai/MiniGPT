@@ -69,6 +69,7 @@ def parse_args():
     parser.add_argument("--eval_every", type=int, default=500)
     parser.add_argument("--save_every", type=int, default=1000)
     parser.add_argument("--data_path", type=str, default="data/python_code.txt")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--val_split", type=float, default=0.1)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--run_name", type=str, default="minigpt-run")
@@ -184,7 +185,7 @@ def train(args):
     global_step = 0
 
     if args.resume:
-        ckpt_files = glob.glob(f"checkpoints/{args.run_name}_s*.pt")
+        ckpt_files = glob.glob(f"{args.checkpoint_dir}/{args.run_name}_s*.pt")
         if ckpt_files:
             latest_ckpt = max(ckpt_files, key=os.path.getctime)
             checkpoint = torch.load(latest_ckpt, map_location=device)
@@ -201,6 +202,7 @@ def train(args):
     scaler = torch.amp.GradScaler("cuda" if "cuda" in device.type else "cpu")
 
     early_stopping = Early_Stopping(patience=args.patience, min_delta=args.min_delta)
+    best_val_loss = float("inf")
 
     for epoch in range(start_epoch, args.max_epochs):
         model.train()
@@ -222,7 +224,7 @@ def train(args):
             if (i + 1) % args.grad_accum == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
+                
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
@@ -231,18 +233,14 @@ def train(args):
 
                 current_lr = scheduler.get_last_lr()[0]
                 unscaled_loss = loss.item() * args.grad_accum
-                wandb.log(
-                    {
-                        "train/loss": unscaled_loss,
-                        "train/lr": current_lr,
-                        "train/epoch": epoch + 1,
-                    },
-                    step=global_step,
-                )
+                
+                wandb.log({
+                    "train/loss": unscaled_loss,
+                    "train/lr": current_lr,
+                    "train/epoch": epoch + 1
+                }, step=global_step)
 
-                pbar.set_postfix(
-                    {"loss": f"{unscaled_loss:.4f}", "lr": f"{current_lr:.2e}"}
-                )
+                pbar.set_postfix({"loss": f"{unscaled_loss:.4f}", "lr": f"{current_lr:.2e}"})
 
                 if global_step % args.eval_every == 0:
                     val_loss = estimate_loss(model, val_loader, device)
@@ -250,17 +248,20 @@ def train(args):
                     logging.info(f"Step {global_step}: Val Loss = {val_loss:.4f}")
 
                 if global_step % args.save_every == 0:
-                    ckpt_path = f"checkpoints/{args.run_name}_s{global_step}.pt"
-                    save_checkpoint(
-                        model, optimizer, config, epoch, global_step, ckpt_path
-                    )
+                    ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_s{global_step}.pt"
+                    save_checkpoint(model, optimizer, config, epoch, global_step, ckpt_path)
 
         val_loss = estimate_loss(model, val_loader, device)
-        wandb.log({"val/loss_epoch": val_loss, "epoch": epoch + 1})
+        wandb.log({"val/loss_epoch": val_loss, "epoch": epoch + 1}, step=global_step)
         logging.info(f"End of Epoch {epoch + 1}: Val Loss = {val_loss:.4f}")
 
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_best.pt"
+            save_checkpoint(model, optimizer, config, epoch, global_step, best_ckpt_path)
+
         if early_stopping.step(val_loss):
-            logging.info("Early stopping triggered. Training stopped.")
+            logging.info(f"Early stopping triggered at epoch {epoch + 1}.")
             break
 
     wandb.finish()
