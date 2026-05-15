@@ -2,32 +2,42 @@ import torch
 import torch.nn as nn
 from src.config import ModelConfig
 from src.block import TransformerBlock
-from src.embeddings import TokenEmbedding, LearnedPositionalEncoding
+from src.embeddings import TokenEmbedding
 
 
 class MiniGPT(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.token_emb = TokenEmbedding(config)
-        self.pos_emb = LearnedPositionalEncoding(config)
         self.blocks = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layers)]
         )
         self.dropout = nn.Dropout(config.dropout)
         self.config = config
+        self.head_size = config.head_size
         self.norm = config.build_norm()
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+    def freq_rope(self, seq_len: int, device: torch.device, theta: int = 10000):
+        inv_freq = 1 / (theta ** (torch.arange(0, self.head_size , 2, device = device).float() / self.head_size))
+
+        t = torch.arange(seq_len, device = device, dtype = inv_freq.dtype)
+        freqs = torch.outer(t,inv_freq)
+
+        emb = torch.repeat_interleave(freqs, 2 , dim = -1)
+    
+        return emb.cos(), emb.sin()
 
     def forward(self, input_ids: torch.Tensor):
         T = input_ids.shape[1]
 
         x = self.token_emb(input_ids)
-        x = x + self.pos_emb(T, device=input_ids.device)
-
         x = self.dropout(x)
 
+        cos, sin = self.freq_rope(T, x.device)
+
         for block in self.blocks:
-            x = block(x)
+            x = block(x, cos, sin)
 
         x = self.norm(x)
         logits = self.lm_head(x)
