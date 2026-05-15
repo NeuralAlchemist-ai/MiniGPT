@@ -24,9 +24,12 @@ class ModelConfig:
         assert self.d_model % self.n_heads == 0, (
             f"d_model ({self.d_model}) must be divisible by n_heads ({self.n_heads})"
         )
-        assert self.head_size % 2 == 0, "head_size must be even for RoPE"
 
-        return self.d_model // self.n_heads
+        size = self.d_model // self.n_heads
+
+        assert size % 2 == 0, "head_size must be even for RoPE"
+
+        return size
 
     def build_norm(self):
         if self.norm_type == "layernorm":
