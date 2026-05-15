@@ -144,11 +144,7 @@ def train(args):
     device = get_device(args.device)
     logging.info(f"Using device: {device}")
 
-    wandb.init(
-        project="minigpt-training",
-        name=args.run_name,
-        config=vars(args)
-    )
+    wandb.init(project="minigpt-training", name=args.run_name, config=vars(args))
     tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
 
     if tokenizer.pad_token is None:
@@ -214,7 +210,9 @@ def train(args):
         for i, (x, y) in enumerate(pbar):
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
-            with torch.amp.autocast(device_type="cuda" if "cuda" in device.type else "cpu"):
+            with torch.amp.autocast(
+                device_type="cuda" if "cuda" in device.type else "cpu"
+            ):
                 logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 loss = loss / args.grad_accum
@@ -224,7 +222,7 @@ def train(args):
             if (i + 1) % args.grad_accum == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                
+
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
@@ -233,13 +231,18 @@ def train(args):
 
                 current_lr = scheduler.get_last_lr()[0]
                 unscaled_loss = loss.item() * args.grad_accum
-                wandb.log({
-                    "train/loss": unscaled_loss,
-                    "train/lr": current_lr,
-                    "train/epoch": epoch + 1
-                }, step=global_step)
+                wandb.log(
+                    {
+                        "train/loss": unscaled_loss,
+                        "train/lr": current_lr,
+                        "train/epoch": epoch + 1,
+                    },
+                    step=global_step,
+                )
 
-                pbar.set_postfix({"loss": f"{unscaled_loss:.4f}", "lr": f"{current_lr:.2e}"})
+                pbar.set_postfix(
+                    {"loss": f"{unscaled_loss:.4f}", "lr": f"{current_lr:.2e}"}
+                )
 
                 if global_step % args.eval_every == 0:
                     val_loss = estimate_loss(model, val_loader, device)
@@ -248,7 +251,9 @@ def train(args):
 
                 if global_step % args.save_every == 0:
                     ckpt_path = f"checkpoints/{args.run_name}_s{global_step}.pt"
-                    save_checkpoint(model, optimizer, config, epoch, global_step, ckpt_path)
+                    save_checkpoint(
+                        model, optimizer, config, epoch, global_step, ckpt_path
+                    )
 
         val_loss = estimate_loss(model, val_loader, device)
         wandb.log({"val/loss_epoch": val_loss, "epoch": epoch + 1})

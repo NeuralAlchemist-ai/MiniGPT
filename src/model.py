@@ -19,13 +19,19 @@ class MiniGPT(nn.Module):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
     def freq_rope(self, seq_len: int, device: torch.device, theta: int = 10000):
-        inv_freq = 1 / (theta ** (torch.arange(0, self.head_size , 2, device = device).float() / self.head_size))
+        inv_freq = 1 / (
+            theta
+            ** (
+                torch.arange(0, self.head_size, 2, device=device).float()
+                / self.head_size
+            )
+        )
 
-        t = torch.arange(seq_len, device = device, dtype = inv_freq.dtype)
-        freqs = torch.outer(t,inv_freq)
+        t = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+        freqs = torch.outer(t, inv_freq)
 
-        emb = torch.repeat_interleave(freqs, 2 , dim = -1)
-    
+        emb = torch.repeat_interleave(freqs, 2, dim=-1)
+
         return emb.cos(), emb.sin()
 
     def forward(self, input_ids: torch.Tensor):

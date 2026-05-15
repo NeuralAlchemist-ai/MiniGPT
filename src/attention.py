@@ -18,10 +18,10 @@ class Head(nn.Module):
     def apply_rope(self, x, cos: torch.cos, sin: torch.sin):
         x_rotated = torch.empty_like(x)
 
-        x_rotated[...,0::2] = -x[...,1::2]
-        x_rotated[...,1::2] = x[...,0::2]
+        x_rotated[..., 0::2] = -x[..., 1::2]
+        x_rotated[..., 1::2] = x[..., 0::2]
 
-        return (x*cos) + (x_rotated * sin)
+        return (x * cos) + (x_rotated * sin)
 
     def forward(self, x, cos, sin):
         B, T, C = x.shape
@@ -35,11 +35,9 @@ class Head(nn.Module):
 
         head_size = K.shape[-1]
 
-        wei = (
-            Q @ K.transpose(-2, -1) * head_size**-0.5
-        ) 
+        wei = Q @ K.transpose(-2, -1) * head_size**-0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        wei = F.softmax(wei, dim=-1) 
+        wei = F.softmax(wei, dim=-1)
         wei = self.attn_dropout(wei)
 
         out = wei @ V
@@ -53,7 +51,6 @@ class MultiHeadAttention(nn.Module):
         self.heads = nn.ModuleList([Head(config) for _ in range(config.n_heads)])
         self.proj = nn.Linear(config.d_model, config.d_model)
         self.proj_dropout = nn.Dropout(config.dropout)
-
 
     def forward(self, x, cos, sin):
         out = torch.cat([h(x, cos, sin) for h in self.heads], dim=-1)
