@@ -17,8 +17,8 @@ class TransformerBlock(nn.Module):
 
         self.residual_dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x):
-        x = x + self.residual_dropout(self.mha(self.norm1(x)))
+    def forward(self, x, cos, sin):
+        x = x + self.residual_dropout(self.mha(self.norm1(x), cos, sin))
         x = x + self.residual_dropout(self.ffn(self.norm2(x)))
 
         return x
