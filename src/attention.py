@@ -15,37 +15,48 @@ class Head(nn.Module):
             "tril", torch.tril(torch.ones(config.max_seq_len, config.max_seq_len))
         )
 
-    def forward(self, x):
+    def apply_rope(self, x, cos: torch.cos, sin: torch.sin):
+        x_rotated = torch.empty_like(x)
+
+        x_rotated[...,0::2] = -x[...,1::2]
+        x_rotated[...,1::2] = x[...,0::2]
+
+        return (x*cos) + (x_rotated * sin)
+
+    def forward(self, x, cos, sin):
         B, T, C = x.shape
 
         K = self.key(x)  # (B,T,hs)
         Q = self.query(x)  # (B,T,hs)
         V = self.value(x)  # (B,T,hs)
 
+        Q = self.apply_rope(Q, cos, sin)
+        K = self.apply_rope(K, cos, sin)
+
         head_size = K.shape[-1]
 
-        # compute attention scores
         wei = (
             Q @ K.transpose(-2, -1) * head_size**-0.5
-        )  # (B,T,hs) @ (B,hs,T) -> (B,T,T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B,T,T)
-        wei = F.softmax(wei, dim=-1)  # (B,T,T)
+        ) 
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = F.softmax(wei, dim=-1) 
         wei = self.attn_dropout(wei)
 
-        # perform the weighted aggregation of the values
-        out = wei @ V  # (B,T,T) @ (B,T,hs) -> (B,T,hs)
+        out = wei @ V
         return out
 
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
+        self.head_size = config.head_size
         self.heads = nn.ModuleList([Head(config) for _ in range(config.n_heads)])
         self.proj = nn.Linear(config.d_model, config.d_model)
         self.proj_dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+
+    def forward(self, x, cos, sin):
+        out = torch.cat([h(x, cos, sin) for h in self.heads], dim=-1)
         out = self.proj(out)
         out = self.proj_dropout(out)
         return out
