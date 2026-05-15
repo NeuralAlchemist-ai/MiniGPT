@@ -7,6 +7,8 @@ import glob
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from tqdm.auto import tqdm
+import wandb
+
 from src.model import MiniGPT
 from src.config import ModelConfig
 
@@ -47,7 +49,6 @@ class Early_Stopping:
             self.counter += 1
             if self.counter >= self.patience:
                 self.stop = True
-
         return self.stop
 
 
@@ -117,10 +118,8 @@ def save_checkpoint(model, optimizer, config, epoch, step, path):
 
 
 def load_and_tokenize(data_path: str, tokenizer, chunk_size: int = 100000):
-
     all_ids = []
     buffer = []
-
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
             buffer.append(line)
@@ -130,12 +129,10 @@ def load_and_tokenize(data_path: str, tokenizer, chunk_size: int = 100000):
                 all_ids.extend(ids)
                 buffer = []
                 logging.info(f"Tokenized {len(all_ids):,} tokens so far...")
-
         if buffer:
             chunk_text = "".join(buffer)
             ids = tokenizer.encode(chunk_text, add_special_tokens=False)
             all_ids.extend(ids)
-
     return torch.tensor(all_ids, dtype=torch.long)
 
 
@@ -147,8 +144,13 @@ def train(args):
     device = get_device(args.device)
     logging.info(f"Using device: {device}")
 
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM3-3B")
+    wandb.init(
+        project="minigpt-training",
+        name=args.run_name,
+        config=vars(args) 
+    )
 
+    tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -202,83 +204,63 @@ def train(args):
     )
     scaler = torch.amp.GradScaler("cuda" if "cuda" in device.type else "cpu")
 
-    accumated_loss = 0.0
-
     early_stopping = Early_Stopping(patience=args.patience, min_delta=args.min_delta)
-    best_val_loss = float("inf")
 
     for epoch in range(start_epoch, args.max_epochs):
         model.train()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.max_epochs}")
+        optimizer.zero_grad()
 
         for i, (x, y) in enumerate(pbar):
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
-            with torch.amp.autocast(
-                device_type="cuda" if "cuda" in device.type else "cpu"
-            ):
+            with torch.amp.autocast(device_type="cuda" if "cuda" in device.type else "cpu"):
                 logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 loss = loss / args.grad_accum
 
             scaler.scale(loss).backward()
-            accumated_loss += loss.item()
 
-            if (i + 1) % args.grad_accum == 0:
+            if (i + 1) % args.grad_accum == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
                 scaler.step(optimizer)
                 scaler.update()
-                optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
-
+                optimizer.zero_grad()
                 global_step += 1
-                pbar.set_postfix(loss=f"{accumated_loss:.4f}")
-                accumated_loss = 0.0
+
+                current_lr = scheduler.get_last_lr()[0]
+                unscaled_loss = loss.item() * args.grad_accum
+                wandb.log({
+                    "train/loss": unscaled_loss,
+                    "train/lr": current_lr,
+                    "train/epoch": epoch + 1
+                }, step=global_step)
+
+                pbar.set_postfix({"loss": f"{unscaled_loss:.4f}", "lr": f"{current_lr:.2e}"})
 
                 if global_step % args.eval_every == 0:
-                    v_loss = estimate_loss(model, val_loader, device)
-                    logging.info(f"Step {global_step} | Val Loss: {v_loss:.4f}")
-
-                    if v_loss < best_val_loss:
-                        best_val_loss = v_loss
-                        save_checkpoint(
-                            model,
-                            optimizer,
-                            config,
-                            epoch,
-                            global_step,
-                            f"checkpoints/{args.run_name}_best.pt",
-                        )
-                        logging.info(f"Best model saved with val_loss {best_val_loss}")
-
-                    if early_stopping.step(v_loss):
-                        logging.info(f"Early stopping triggered at step {global_step}.")
-                        break
+                    val_loss = estimate_loss(model, val_loader, device)
+                    wandb.log({"val/loss": val_loss}, step=global_step)
+                    logging.info(f"Step {global_step}: Val Loss = {val_loss:.4f}")
 
                 if global_step % args.save_every == 0:
-                    save_checkpoint(
-                        model,
-                        optimizer,
-                        config,
-                        epoch,
-                        global_step,
-                        f"checkpoints/{args.run_name}_s{global_step}.pt",
-                    )
+                    ckpt_path = f"checkpoints/{args.run_name}_s{global_step}.pt"
+                    save_checkpoint(model, optimizer, config, epoch, global_step, ckpt_path)
 
-        if early_stopping.stop:
+        val_loss = estimate_loss(model, val_loader, device)
+        wandb.log({"val/loss_epoch": val_loss, "epoch": epoch + 1})
+        logging.info(f"End of Epoch {epoch + 1}: Val Loss = {val_loss:.4f}")
+
+        if early_stopping.step(val_loss):
+            logging.info("Early stopping triggered. Training stopped.")
             break
 
-    save_checkpoint(
-        model,
-        optimizer,
-        config,
-        args.max_epochs,
-        global_step,
-        f"checkpoints/{args.run_name}_final.pt",
-    )
-    logging.info("Training completed.")
+    wandb.finish()
 
 
 if __name__ == "__main__":
-    train(parse_args())
+    args = parse_args()
+    train(args)
