@@ -103,7 +103,18 @@ def estimate_loss(model, dataloader, device, num_batches=20):
     return total_loss / min(num_batches, len(dataloader))
 
 
-def save_checkpoint(model, optimizer, scheduler, scaler, early_stopping, config, epoch, step, batch_idx, path):
+def save_checkpoint(
+    model,
+    optimizer,
+    scheduler,
+    scaler,
+    early_stopping,
+    config,
+    epoch,
+    step,
+    batch_idx,
+    path,
+):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
     torch.save(
@@ -126,7 +137,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, early_stopping, config,
 
 
 def find_latest_checkpoint(checkpoint_dir: str, run_name: str):
-    pattern = re.compile(rf"^{re.escape(run_name)}(?:_epoch(?P<epoch>\d+))?_s(?P<step>\d+)\.pt$")
+    pattern = re.compile(
+        rf"^{re.escape(run_name)}(?:_epoch(?P<epoch>\d+))?_s(?P<step>\d+)\.pt$"
+    )
     ckpt_files = glob.glob(os.path.join(checkpoint_dir, f"{run_name}_*.pt"))
     valid_ckpts = []
     for path in ckpt_files:
@@ -196,7 +209,7 @@ def train(args):
     if wandb_id is not None:
         wandb_kwargs["id"] = wandb_id
     wandb.init(**wandb_kwargs)
-    
+
     tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -243,16 +256,20 @@ def train(args):
     if args.resume:
         latest_ckpt = find_latest_checkpoint(args.checkpoint_dir, args.run_name)
         if latest_ckpt:
-            checkpoint = torch.load(latest_ckpt, map_location=device, weights_only=False)
-            
+            checkpoint = torch.load(
+                latest_ckpt, map_location=device, weights_only=False
+            )
+
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             scaler.load_state_dict(checkpoint["scaler_state_dict"])
-            
-            early_stopping.best_loss = checkpoint.get("early_stopping_best_loss", float("inf"))
+
+            early_stopping.best_loss = checkpoint.get(
+                "early_stopping_best_loss", float("inf")
+            )
             early_stopping.counter = checkpoint.get("early_stopping_counter", 0)
-            
+
             start_epoch = checkpoint.get("epoch", 0)
             start_batch_idx = checkpoint.get("batch_idx", 0)
             global_step = checkpoint.get("step", 0)
@@ -267,7 +284,9 @@ def train(args):
             logging.warning("No checkpoints found. Starting training from scratch.")
 
     if start_epoch >= args.max_epochs:
-        logging.info("Checkpoint already completed all requested epochs. Nothing to resume.")
+        logging.info(
+            "Checkpoint already completed all requested epochs. Nothing to resume."
+        )
         return
 
     for epoch in range(start_epoch, args.max_epochs):
@@ -287,7 +306,9 @@ def train(args):
 
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
-            with torch.amp.autocast(device_type="cuda" if "cuda" in device.type else "cpu"):
+            with torch.amp.autocast(
+                device_type="cuda" if "cuda" in device.type else "cpu"
+            ):
                 logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 loss = loss / args.grad_accum
@@ -297,29 +318,42 @@ def train(args):
             if (i + 1) % args.grad_accum == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                
+
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
                 optimizer.zero_grad()
-                
+
                 global_step += 1
 
                 current_lr = scheduler.get_last_lr()[0]
-                wandb.log({"train/loss": loss.item() * args.grad_accum, "train/lr": current_lr, "global_step": global_step})
-                pbar.set_postfix({"loss": f"{loss.item() * args.grad_accum:.4f}", "lr": f"{current_lr:.2e}"})
+                wandb.log(
+                    {
+                        "train/loss": loss.item() * args.grad_accum,
+                        "train/lr": current_lr,
+                        "global_step": global_step,
+                    }
+                )
+                pbar.set_postfix(
+                    {
+                        "loss": f"{loss.item() * args.grad_accum:.4f}",
+                        "lr": f"{current_lr:.2e}",
+                    }
+                )
 
                 if global_step % args.eval_every == 0:
                     val_loss = estimate_loss(model, val_loader, device)
                     wandb.log({"val/loss": val_loss, "global_step": global_step})
                     logging.info(f"Step {global_step}: Val Loss = {val_loss:.4f}")
-                    
+
                     if early_stopping.step(val_loss):
                         logging.info("Early stopping triggered. Training stopped.")
                         break
 
                 if global_step % args.save_every == 0:
-                    ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_s{global_step}.pt"
+                    ckpt_path = (
+                        f"{args.checkpoint_dir}/{args.run_name}_s{global_step}.pt"
+                    )
                     save_checkpoint(
                         model,
                         optimizer,
@@ -336,7 +370,9 @@ def train(args):
         if early_stopping.stop:
             break
 
-        epoch_ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_epoch{epoch + 1}_s{global_step}.pt"
+        epoch_ckpt_path = (
+            f"{args.checkpoint_dir}/{args.run_name}_epoch{epoch + 1}_s{global_step}.pt"
+        )
         save_checkpoint(
             model,
             optimizer,
