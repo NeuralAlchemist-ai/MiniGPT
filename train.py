@@ -1,9 +1,10 @@
+import argparse
+import glob
+import logging
+import os
+import re
 import torch
 import torch.nn.functional as F
-import logging
-import argparse
-import os
-import glob
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from tqdm.auto import tqdm
@@ -102,20 +103,49 @@ def estimate_loss(model, dataloader, device, num_batches=20):
     return total_loss / min(num_batches, len(dataloader))
 
 
-def save_checkpoint(model, optimizer, config, epoch, step, path):
+def save_checkpoint(model, optimizer, scheduler, scaler, early_stopping, config, epoch, step, batch_idx, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
     torch.save(
         {
             "model_state_dict": raw_model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
+            "early_stopping_best_loss": early_stopping.best_loss,
+            "early_stopping_counter": early_stopping.counter,
             "config": config,
             "epoch": epoch,
             "step": step,
+            "batch_idx": batch_idx,
+            "wandb_run_id": wandb.run.id if wandb.run is not None else None,
         },
         path,
     )
-    logging.info(f"Saved: {path}")
+    logging.info(f"Saved checkpoint: {path}")
+
+
+def find_latest_checkpoint(checkpoint_dir: str, run_name: str):
+    pattern = re.compile(rf"^{re.escape(run_name)}(?:_epoch(?P<epoch>\d+))?_s(?P<step>\d+)\.pt$")
+    ckpt_files = glob.glob(os.path.join(checkpoint_dir, f"{run_name}_*.pt"))
+    valid_ckpts = []
+    for path in ckpt_files:
+        match = pattern.match(os.path.basename(path))
+        if match:
+            valid_ckpts.append((int(match.group("step")), path))
+    if not valid_ckpts:
+        return None
+    return max(valid_ckpts, key=lambda x: x[0])[1]
+
+
+def create_train_loader(token_ids: torch.Tensor, args, epoch: int):
+    return DataLoader(
+        TextDataset(token_ids, args.max_seq_len),
+        batch_size=args.batch_size,
+        shuffle=True,
+        pin_memory=True,
+        generator=torch.Generator().manual_seed(args.seed + epoch),
+    )
 
 
 def load_and_tokenize(data_path: str, tokenizer, chunk_size: int = 100000):
@@ -145,9 +175,29 @@ def train(args):
     device = get_device(args.device)
     logging.info(f"Using device: {device}")
 
-    wandb.init(project="minigpt-training", name=args.run_name, config=vars(args))
-    tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
+    latest_ckpt = None
+    ckpt_metadata = None
+    wandb_id = None
+    wandb_resume = None
+    if args.resume:
+        latest_ckpt = find_latest_checkpoint(args.checkpoint_dir, args.run_name)
+        if latest_ckpt:
+            ckpt_metadata = torch.load(latest_ckpt, map_location="cpu")
+            wandb_id = ckpt_metadata.get("wandb_run_id")
+            wandb_resume = "must" if wandb_id else "allow"
 
+    wandb_kwargs = {
+        "project": "minigpt-training",
+        "name": args.run_name,
+        "config": vars(args),
+    }
+    if wandb_resume is not None:
+        wandb_kwargs["resume"] = wandb_resume
+    if wandb_id is not None:
+        wandb_kwargs["id"] = wandb_id
+    wandb.init(**wandb_kwargs)
+    
+    tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -181,40 +231,63 @@ def train(args):
     model = MiniGPT(config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1)
 
+    total_steps = (len(train_loader) // args.grad_accum) * args.max_epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+    scaler = torch.amp.GradScaler("cuda" if "cuda" in device.type else "cpu")
+    early_stopping = Early_Stopping(patience=args.patience, min_delta=args.min_delta)
+
     start_epoch = 0
+    start_batch_idx = 0
     global_step = 0
 
     if args.resume:
-        ckpt_files = glob.glob(f"{args.checkpoint_dir}/{args.run_name}_s*.pt")
-        if ckpt_files:
-            latest_ckpt = max(ckpt_files, key=os.path.getctime)
-            checkpoint = torch.load(latest_ckpt, map_location=device)
+        latest_ckpt = find_latest_checkpoint(args.checkpoint_dir, args.run_name)
+        if latest_ckpt:
+            checkpoint = torch.load(latest_ckpt, map_location=device, weights_only=False)
+            
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            start_epoch = checkpoint["epoch"]
-            global_step = checkpoint["step"]
-            logging.info(f"Resumed from {latest_ckpt} at step {global_step}")
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            
+            early_stopping.best_loss = checkpoint.get("early_stopping_best_loss", float("inf"))
+            early_stopping.counter = checkpoint.get("early_stopping_counter", 0)
+            
+            start_epoch = checkpoint.get("epoch", 0)
+            start_batch_idx = checkpoint.get("batch_idx", 0)
+            global_step = checkpoint.get("step", 0)
+            if start_batch_idx >= len(train_loader):
+                start_epoch += 1
+                start_batch_idx = 0
+            logging.info(
+                f"Successfully resumed from {latest_ckpt} at step {global_step} "
+                f"(Epoch {start_epoch}, batch {start_batch_idx})"
+            )
+        else:
+            logging.warning("No checkpoints found. Starting training from scratch.")
 
-    total_steps = (len(train_loader) // args.grad_accum) * args.max_epochs
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_steps, last_epoch=global_step - 1
-    )
-    scaler = torch.amp.GradScaler("cuda" if "cuda" in device.type else "cpu")
-
-    early_stopping = Early_Stopping(patience=args.patience, min_delta=args.min_delta)
-    best_val_loss = float("inf")
+    if start_epoch >= args.max_epochs:
+        logging.info("Checkpoint already completed all requested epochs. Nothing to resume.")
+        return
 
     for epoch in range(start_epoch, args.max_epochs):
         model.train()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.max_epochs}")
+        train_loader = create_train_loader(token_ids[:split_idx], args, epoch)
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch + 1}/{args.max_epochs}",
+            initial=start_batch_idx if epoch == start_epoch else 0,
+            total=len(train_loader),
+        )
         optimizer.zero_grad()
 
         for i, (x, y) in enumerate(pbar):
+            if epoch == start_epoch and i < start_batch_idx:
+                continue
+
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
-            with torch.amp.autocast(
-                device_type="cuda" if "cuda" in device.type else "cpu"
-            ):
+            with torch.amp.autocast(device_type="cuda" if "cuda" in device.type else "cpu"):
                 logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 loss = loss / args.grad_accum
@@ -224,56 +297,58 @@ def train(args):
             if (i + 1) % args.grad_accum == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
+                
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
                 optimizer.zero_grad()
+                
                 global_step += 1
 
                 current_lr = scheduler.get_last_lr()[0]
-                unscaled_loss = loss.item() * args.grad_accum
-
-                wandb.log(
-                    {
-                        "train/loss": unscaled_loss,
-                        "train/lr": current_lr,
-                        "train/epoch": epoch + 1,
-                    },
-                    step=global_step,
-                )
-
-                pbar.set_postfix(
-                    {"loss": f"{unscaled_loss:.4f}", "lr": f"{current_lr:.2e}"}
-                )
+                wandb.log({"train/loss": loss.item() * args.grad_accum, "train/lr": current_lr, "global_step": global_step})
+                pbar.set_postfix({"loss": f"{loss.item() * args.grad_accum:.4f}", "lr": f"{current_lr:.2e}"})
 
                 if global_step % args.eval_every == 0:
                     val_loss = estimate_loss(model, val_loader, device)
-                    wandb.log({"val/loss": val_loss}, step=global_step)
+                    wandb.log({"val/loss": val_loss, "global_step": global_step})
                     logging.info(f"Step {global_step}: Val Loss = {val_loss:.4f}")
+                    
+                    if early_stopping.step(val_loss):
+                        logging.info("Early stopping triggered. Training stopped.")
+                        break
 
                 if global_step % args.save_every == 0:
-                    ckpt_path = (
-                        f"{args.checkpoint_dir}/{args.run_name}_s{global_step}.pt"
-                    )
+                    ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_s{global_step}.pt"
                     save_checkpoint(
-                        model, optimizer, config, epoch, global_step, ckpt_path
+                        model,
+                        optimizer,
+                        scheduler,
+                        scaler,
+                        early_stopping,
+                        config,
+                        epoch,
+                        global_step,
+                        i + 1,
+                        ckpt_path,
                     )
 
-        val_loss = estimate_loss(model, val_loader, device)
-        wandb.log({"val/loss_epoch": val_loss, "epoch": epoch + 1}, step=global_step)
-        logging.info(f"End of Epoch {epoch + 1}: Val Loss = {val_loss:.4f}")
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_best.pt"
-            save_checkpoint(
-                model, optimizer, config, epoch, global_step, best_ckpt_path
-            )
-
-        if early_stopping.step(val_loss):
-            logging.info(f"Early stopping triggered at epoch {epoch + 1}.")
+        if early_stopping.stop:
             break
+
+        epoch_ckpt_path = f"{args.checkpoint_dir}/{args.run_name}_epoch{epoch + 1}_s{global_step}.pt"
+        save_checkpoint(
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            early_stopping,
+            config,
+            epoch + 1,
+            global_step,
+            0,
+            epoch_ckpt_path,
+        )
 
     wandb.finish()
 
