@@ -12,14 +12,19 @@ class Head(nn.Module):
         self.value = nn.Linear(config.d_model, config.head_size, bias=False)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.register_buffer(
-            "tril", torch.tril(torch.ones(config.max_seq_len, config.max_seq_len))
+            "tril",
+            torch.tril(torch.ones(config.max_seq_len, config.max_seq_len, dtype=torch.bool)),
         )
 
-    def apply_rope(self, x, cos: torch.cos, sin: torch.sin):
-        x_rotated = torch.empty_like(x)
+    def apply_rope(self, x, cos, sin):
+        half = x.shape[-1] // 2
+        x1, x2 = x[..., :half], x[..., half:]
+        x_rotated = torch.cat((-x2, x1), dim=-1)
 
-        x_rotated[..., 0::2] = -x[..., 1::2]
-        x_rotated[..., 1::2] = x[..., 0::2]
+        if cos.ndim == 2:
+            leading = (1,) * (x.ndim - 2)
+            cos = cos.view(*leading, *cos.shape)
+            sin = sin.view(*leading, *sin.shape)
 
         return (x * cos) + (x_rotated * sin)
 
@@ -36,7 +41,7 @@ class Head(nn.Module):
         head_size = K.shape[-1]
 
         wei = Q @ K.transpose(-2, -1) * head_size**-0.5
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        wei = wei.masked_fill(~self.tril[:T, :T], float("-inf"))
         wei = F.softmax(wei, dim=-1)
         wei = self.attn_dropout(wei)
 
