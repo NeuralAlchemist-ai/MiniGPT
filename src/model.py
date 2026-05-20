@@ -18,21 +18,21 @@ class MiniGPT(nn.Module):
         self.norm = config.build_norm()
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-    def freq_rope(self, seq_len: int, device: torch.device, theta: int = 10000):
-        inv_freq = 1 / (
-            theta
-            ** (
-                torch.arange(0, self.head_size, 2, device=device).float()
-                / self.head_size
-            )
-        )
+        cos_cache, sin_cache = self._build_rope_cache(config.max_seq_len, self.head_size)
+        self.register_buffer("cos_cache", cos_cache, persistent=False)
+        self.register_buffer("sin_cache", sin_cache, persistent=False)
 
-        t = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+    def _build_rope_cache(self, max_seq_len: int, head_size: int, theta: int = 10000):
+        inv_freq = 1 / (theta ** (torch.arange(0, head_size, 2).float() / head_size))
+        t = torch.arange(max_seq_len, dtype=inv_freq.dtype)
         freqs = torch.outer(t, inv_freq)
-
         emb = torch.repeat_interleave(freqs, 2, dim=-1)
-
         return emb.cos(), emb.sin()
+
+    def freq_rope(self, seq_len: int, device: torch.device):
+        cos = self.cos_cache[:seq_len].to(device)
+        sin = self.sin_cache[:seq_len].to(device)
+        return cos, sin
 
     def forward(self, input_ids: torch.Tensor):
         T = input_ids.shape[1]
