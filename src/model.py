@@ -18,7 +18,9 @@ class MiniGPT(nn.Module):
         self.norm = config.build_norm()
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-        cos_cache, sin_cache = self._build_rope_cache(config.max_seq_len, self.head_size)
+        cos_cache, sin_cache = self._build_rope_cache(
+            config.max_seq_len, self.head_size
+        )
         self.register_buffer("cos_cache", cos_cache, persistent=False)
         self.register_buffer("sin_cache", sin_cache, persistent=False)
 

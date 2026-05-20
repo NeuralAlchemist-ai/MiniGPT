@@ -13,7 +13,9 @@ class Head(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.register_buffer(
             "tril",
-            torch.tril(torch.ones(config.max_seq_len, config.max_seq_len, dtype=torch.bool)),
+            torch.tril(
+                torch.ones(config.max_seq_len, config.max_seq_len, dtype=torch.bool)
+            ),
         )
 
     def apply_rope(self, x, cos, sin):
