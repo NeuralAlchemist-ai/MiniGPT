@@ -42,16 +42,16 @@ class MultiHeadAttention(nn.Module):
 
         qkv = self.qkv(x)
 
-        Q,K,V = qkv.split(self.d_model, dim=-1)
+        Q, K, V = qkv.split(self.d_model, dim=-1)
 
-        Q = Q.view(B, T, self.n_heads, self.head_size).transpose(1,2)
-        K = K.view(B, T, self.n_heads, self.head_size).transpose(1,2)
-        V = V.view(B, T, self.n_heads, self.head_size).transpose(1,2)
+        Q = Q.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+        K = K.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+        V = V.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
 
         Q = self.apply_rope(Q, cos, sin)
         K = self.apply_rope(K, cos, sin)
 
-        wei = Q @ K.transpose(-2, -1)# * (self.head_size**-0.5)
+        wei = Q @ K.transpose(-2, -1)  # * (self.head_size**-0.5)
         wei = wei.masked_fill(~self.tril[:T, :T], float("-inf"))
         wei = F.softmax(wei, dim=-1)
         wei = self.attn_dropout(wei)
@@ -63,4 +63,3 @@ class MultiHeadAttention(nn.Module):
         out = self.proj_dropout(out)
 
         return out
-
