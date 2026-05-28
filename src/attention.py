@@ -46,20 +46,12 @@ class MultiHeadAttention(nn.Module):
 
         Q = Q.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
         K = K.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
-        V = V.view(B, T, self.n_heads, self.head_size).transpose(1, 2)
+        V = V.view(B, T, self.n_heads, self.head_size).transpose(1, 2).contiguous()
 
-        Q = self.apply_rope(Q, cos, sin)
-        K = self.apply_rope(K, cos, sin)
+        Q = self.apply_rope(Q, cos, sin).contiguous()
+        K = self.apply_rope(K, cos, sin).contiguous()
 
-        wei = Q @ K.transpose(-2, -1)  # * (self.head_size**-0.5)
-        wei = wei.masked_fill(~self.tril[:T, :T], float("-inf"))
-        wei = F.softmax(wei, dim=-1)
-        wei = self.attn_dropout(wei)
-
-        out = wei @ V
-
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        out = self.proj(out)
-        out = self.proj_dropout(out)
+        with torch.nn.attention.sdpa_kernel(enabled_flash=True):
+           out = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
 
         return out
