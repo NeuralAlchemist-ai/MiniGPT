@@ -52,6 +52,6 @@ class MultiHeadAttention(nn.Module):
         K = self.apply_rope(K, cos, sin).contiguous()
 
         with torch.nn.attention.sdpa_kernel(enabled_flash=True):
-           out = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+            out = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
 
         return out
